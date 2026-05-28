@@ -1,14 +1,17 @@
 # ComfyUI_RH_VoxCPM
 
+- [RunningHub China](https://www.runninghub.cn/?inviteCode=rh-v1367)
+- [RunningHub International](https://www.runninghub.ai/?inviteCode=rh-v1367)
+
 ![License](https://img.shields.io/badge/License-Apache%202.0-green)
 
-[中文说明](README_zh.md)
+[中文说明](README_CN.md)
 
 ComfyUI custom nodes for [VoxCPM](https://github.com/OpenBMB/VoxCPM) — Tokenizer-Free TTS for Context-Aware Speech Generation and True-to-Life Voice Cloning.
 
 Run this node online: [RunningHub (CN)](https://www.runninghub.cn/?inviteCode=rh-v1367) | [RunningHub (Global)](https://www.runninghub.ai/?inviteCode=rh-v1367)
 
-GitHub Repository: [HM-RunningHub/ComfyUI_RH_VoxCPM](https://github.com/HM-RunningHub/ComfyUI_RH_VoxCPM)
+GitHub Repository: [RH-RunningHub/ComfyUI_RH_VoxCPM](https://github.com/RH-RunningHub/ComfyUI_RH_VoxCPM)
 
 ## ✨ Features
 
@@ -26,7 +29,7 @@ GitHub Repository: [HM-RunningHub/ComfyUI_RH_VoxCPM](https://github.com/HM-Runni
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/HM-RunningHub/ComfyUI_RH_VoxCPM.git
+git clone https://github.com/RH-RunningHub/ComfyUI_RH_VoxCPM.git
 cd ComfyUI_RH_VoxCPM
 pip install -r requirements.txt
 ```
@@ -48,7 +51,7 @@ Search for `ComfyUI_RH_VoxCPM` in ComfyUI Manager and install.
 #### Method 1: Download from HuggingFace (Recommended)
 
 ```bash
-huggingface-cli download openbmb/VoxCPM2 --local-dir ComfyUI/models/voxcpm/VoxCPM2
+hf download openbmb/VoxCPM2 --local-dir ComfyUI/models/voxcpm/VoxCPM2
 ```
 
 #### Method 2: Download from ModelScope (For China users)
@@ -99,6 +102,7 @@ Download example workflows from the [`examples/`](examples/) directory and impor
 1. **[Basic Workflow](examples/VoxCPM2%20基础工作流.json)** — Single-speaker speech generation with voice design / cloning
 2. **[Multi-Speaker Workflow](examples/VoxCPM2%20多人工作流.json)** — Fixed 5-speaker multi-speaker dialogue generation with per-speaker voice control
 3. **[LoRA Training Workflow](examples/VoxCPM2%20LoRA%20训练工作流.json)** — Build a tiny dataset from two audio clips and run a LoRA fine-tune
+4. **[API Workflow](examples/voxcpm_basic_api.json)** — Minimal ComfyUI API workflow for model loading, speech generation, and audio saving
 
 Notes:
 

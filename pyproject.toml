@@ -1,7 +1,7 @@
 [project]
 name = "rh_voxcpm"
-description = ""
-version = "1.0.0"
+description = "ComfyUI custom nodes for VoxCPM text-to-speech, voice cloning, multi-speaker generation, and LoRA training."
+version = "260528.18.50"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 # classifiers = [
@@ -21,18 +21,17 @@ requires-python = ">=3.10"
 #     "Environment :: GPU :: Apple Metal",    # Apple Metal support
 # ]
 
-dependencies = ["voxcpm", "soundfile", "librosa", "wetext", "modelscope>=1.22.0", "funasr", "inflect", "addict", "simplejson", "sortedcontainers", "pydantic"]
+dependencies = ["voxcpm", "soundfile", "librosa", "wetext", "modelscope>=1.22.0", "funasr", "inflect", "addict", "simplejson", "sortedcontainers", "pydantic", "transformers", "datasets", "safetensors", "argbind"]
 
 [project.urls]
-Repository = "https://github.com/HM-RunningHub/ComfyUI_RH_VoxCPM"
+Repository = "https://github.com/RH-RunningHub/ComfyUI_RH_VoxCPM"
 #  Used by Comfy Registry https://registry.comfy.org
-Documentation = "https://github.com/HM-RunningHub/ComfyUI_RH_VoxCPM/wiki"
-"Bug Tracker" = "https://github.com/HM-RunningHub/ComfyUI_RH_VoxCPM/issues"
+Documentation = "https://github.com/RH-RunningHub/ComfyUI_RH_VoxCPM/wiki"
+"Bug Tracker" = "https://github.com/RH-RunningHub/ComfyUI_RH_VoxCPM/issues"
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "gluttony10"
 DisplayName = "ComfyUI_RH_VoxCPM"
 Icon = ""
 includes = [] 
 # "requires-comfyui" = ">=1.0.0"  # ComfyUI version compatibility
-

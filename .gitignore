@@ -8,6 +8,7 @@ cptorh*.sh
 
 # Python
 __pycache__/
+.ruff_cache/
 *.py[cod]
 venv/
 *.egg-info/

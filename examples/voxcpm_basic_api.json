@@ -1,0 +1,40 @@
+{
+  "1": {
+    "class_type": "RunningHub_VoxCPM_LoadModel",
+    "inputs": {
+      "model_name": "VoxCPM2",
+      "optimize": false,
+      "lora_name": "None"
+    }
+  },
+  "2": {
+    "class_type": "RunningHub_VoxCPM_Generate",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "control_instruction": "A warm young female voice speaking naturally.",
+      "text": "Hello, this is a VoxCPM voice generation test.",
+      "cfg_value": 2.0,
+      "inference_steps": 10,
+      "seed": 42,
+      "ultimate_clone": false,
+      "reference_audio_text": "",
+      "normalize_text": false,
+      "denoise_reference": false,
+      "max_len": 4096,
+      "retry_badcase": true
+    }
+  },
+  "3": {
+    "class_type": "SaveAudio",
+    "inputs": {
+      "audio": [
+        "2",
+        0
+      ],
+      "filename_prefix": "audio/ComfyUI_RH_VoxCPM"
+    }
+  }
+}
