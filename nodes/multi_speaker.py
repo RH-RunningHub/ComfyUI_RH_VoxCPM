@@ -6,13 +6,11 @@ import inspect
 
 import numpy as np
 import torch
-import torchaudio
-import folder_paths
 import comfy.utils
 
 from .generate import (
-    _recognize_audio,
     _denoise_audio,
+    _generate_with_quality_guard,
     _safe_save_wav,
     _sanitize_control,
 )
@@ -23,7 +21,6 @@ NUM_SPEAKERS = 5
 DEFAULT_REFERENCE_AUDIO_INPUTS = 2
 TARGET_RMS = 0.08
 RMS_FLOOR = 1e-6
-SENTENCE_DELIMITERS = re.compile(r"(?<=[。！？.!?])")
 _AUDIO_INPUT_PATTERN = re.compile(r"^audio_(\d+)$")
 
 
@@ -33,56 +30,6 @@ def _normalize_rms(wav, target_rms=TARGET_RMS):
     if rms < RMS_FLOOR:
         return wav
     return wav * (target_rms / rms)
-
-
-def _split_by_sentences(wav, text, num_parts):
-    """Split a waveform into num_parts roughly equal chunks by duration.
-
-    Uses sentence boundaries in text to estimate proportional lengths.
-    """
-    if num_parts <= 1:
-        return [wav]
-
-    sentences = SENTENCE_DELIMITERS.split(text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-
-    if len(sentences) < num_parts:
-        chunk_size = len(wav) // num_parts
-        parts = []
-        for i in range(num_parts):
-            start = i * chunk_size
-            end = start + chunk_size if i < num_parts - 1 else len(wav)
-            parts.append(wav[start:end])
-        return parts
-
-    # Distribute sentences into num_parts groups by character count
-    total_chars = sum(len(s) for s in sentences)
-    target_chars = total_chars / num_parts
-
-    groups = []
-    current_group = []
-    current_chars = 0
-    for s in sentences:
-        current_group.append(s)
-        current_chars += len(s)
-        if current_chars >= target_chars and len(groups) < num_parts - 1:
-            groups.append(current_chars)
-            current_group = []
-            current_chars = 0
-    groups.append(current_chars)
-
-    # Split wav proportionally
-    total_group_chars = sum(groups)
-    parts = []
-    offset = 0
-    for i, gc in enumerate(groups):
-        if i == len(groups) - 1:
-            parts.append(wav[offset:])
-        else:
-            length = int(len(wav) * gc / total_group_chars)
-            parts.append(wav[offset:offset + length])
-            offset += length
-    return parts
 
 
 def _save_audio_to_temp(audio_dict):
@@ -153,6 +100,25 @@ def _parse_speaker_controls(text, max_speakers=None):
         if sanitized:
             cleaned[spk_idx] = sanitized
     return cleaned
+
+
+def _parse_reference_texts(text, max_speakers=None):
+    """Parse exact, user-supplied reference transcripts by speaker tag."""
+
+    tagged_text = (text or "").strip()
+    if not tagged_text:
+        return {}
+
+    transcripts = {}
+    for spk_idx, segment_text in _parse_script(
+        tagged_text, max_speakers=max_speakers
+    ):
+        transcripts.setdefault(spk_idx, []).append(segment_text)
+    return {
+        spk_idx: "\n".join(parts).strip()
+        for spk_idx, parts in transcripts.items()
+        if "\n".join(parts).strip()
+    }
 
 
 class _DynamicAudioOptionalInputs(dict):
@@ -228,6 +194,13 @@ class RunningHubVoxCPMMultiSpeaker:
             "step": 64,
         })
         inputs["optional"]["retry_badcase"] = ("BOOLEAN", {"default": True})
+        # Append new widgets after all legacy widgets so existing serialized
+        # widget_values keep their positional meaning when old workflows load.
+        for i in range(1, NUM_SPEAKERS + 1):
+            inputs["optional"][f"reference_text_{i}"] = ("STRING", {
+                "default": "",
+                "multiline": True,
+            })
 
         return inputs
 
@@ -255,25 +228,22 @@ class RunningHubVoxCPMMultiSpeaker:
 
         speaker_audios = {}
         speaker_controls = {}
+        speaker_reference_texts = {}
         for i in range(1, NUM_SPEAKERS + 1):
             speaker_audios[i] = kwargs.get(f"audio_{i}")
             speaker_controls[i] = _sanitize_control(
                 (kwargs.get(f"control_{i}") or "").strip()
             )
+            speaker_reference_texts[i] = (
+                kwargs.get(f"reference_text_{i}") or ""
+            ).strip()
 
-        # Group segments by speaker: {spk_idx: [(original_index, text), ...]}
-        spk_groups = {}
-        for orig_idx, (spk_idx, seg_text) in enumerate(segments):
-            spk_groups.setdefault(spk_idx, []).append((orig_idx, seg_text))
-
-        unique_speakers = sorted(spk_groups.keys())
-        total_steps = len(unique_speakers) * (int(inference_steps) + 2) + 1
+        total_steps = len(segments) * (int(inference_steps) + 2) + 1
         pbar = comfy.utils.ProgressBar(total_steps)
         step_counter = 0
 
         temp_files = []
-        # Will hold (original_index, wav_np) pairs
-        indexed_wavs = [None] * len(segments)
+        generated_segments = []
 
         try:
             spk_wav_cache = {}
@@ -287,21 +257,25 @@ class RunningHubVoxCPMMultiSpeaker:
                         wav_path = denoised
                     spk_wav_cache[spk_idx] = wav_path
 
-            spk_asr_cache = {}
-
-            for spk_idx in unique_speakers:
-                group = spk_groups[spk_idx]
-                texts = [t for _, t in group]
-                combined_text = "\n".join(texts)
-
+            for segment_index, (spk_idx, segment_text) in enumerate(segments, 1):
                 ref_wav_path = spk_wav_cache.get(spk_idx)
                 control = speaker_controls.get(spk_idx, "")
+                reference_text = speaker_reference_texts.get(spk_idx, "")
                 has_control = bool(control)
 
-                logger.info("Generating spk%d: %d segments, combined %d chars",
-                            spk_idx, len(group), len(combined_text))
+                logger.info(
+                    "Generating segment %d/%d for spk%d: %d chars, "
+                    "has_ref=%s, has_control=%s, has_reference_text=%s",
+                    segment_index,
+                    len(segments),
+                    spk_idx,
+                    len(segment_text),
+                    ref_wav_path is not None,
+                    has_control,
+                    bool(reference_text),
+                )
 
-                final_text = f"({control}){combined_text}" if has_control else combined_text
+                final_text = f"({control}){segment_text}" if has_control else segment_text
                 generate_kwargs = {
                     "text": final_text,
                     "cfg_value": float(cfg_value),
@@ -314,55 +288,43 @@ class RunningHubVoxCPMMultiSpeaker:
                 if has_control:
                     if ref_wav_path is not None and is_v2:
                         generate_kwargs["reference_wav_path"] = ref_wav_path
-                else:
-                    if ref_wav_path is not None:
-                        if is_v2:
-                            if spk_idx not in spk_asr_cache:
-                                logger.info("Running ASR for spk%d...", spk_idx)
-                                spk_asr_cache[spk_idx] = _recognize_audio(ref_wav_path)
-                                logger.info("ASR result for spk%d: %s...",
-                                            spk_idx, spk_asr_cache[spk_idx][:60])
-                            ref_text = spk_asr_cache[spk_idx]
-                            generate_kwargs["prompt_wav_path"] = ref_wav_path
-                            generate_kwargs["prompt_text"] = ref_text
-                            generate_kwargs["reference_wav_path"] = ref_wav_path
-                        else:
-                            if spk_idx not in spk_asr_cache:
-                                spk_asr_cache[spk_idx] = _recognize_audio(ref_wav_path)
-                            ref_text = spk_asr_cache[spk_idx]
-                            generate_kwargs["prompt_wav_path"] = ref_wav_path
-                            generate_kwargs["prompt_text"] = ref_text
+                elif ref_wav_path is not None and reference_text:
+                    generate_kwargs["prompt_wav_path"] = ref_wav_path
+                    generate_kwargs["prompt_text"] = reference_text
+                    if is_v2:
+                        generate_kwargs["reference_wav_path"] = ref_wav_path
+                elif ref_wav_path is not None and is_v2:
+                    # Safe V2 fallback: condition on voice characteristics only.
+                    # Do not invent prompt_text through automatic ASR.
+                    generate_kwargs["reference_wav_path"] = ref_wav_path
+                elif ref_wav_path is not None:
+                    raise ValueError(
+                        f"spk{spk_idx} uses a VoxCPM v1 reference audio and "
+                        f"requires reference_text_{spk_idx}. Automatic ASR is "
+                        "intentionally disabled for generation."
+                    )
+                elif reference_text:
+                    raise ValueError(
+                        f"reference_text_{spk_idx} was provided without audio_{spk_idx}."
+                    )
 
                 step_counter += 1
                 pbar.update_absolute(step_counter, total_steps)
 
-                wav_np = voxcpm_model.generate(**generate_kwargs)
-                if not isinstance(wav_np, np.ndarray):
-                    wav_np = np.asarray(wav_np, dtype=np.float32)
-                wav_np = wav_np.astype(np.float32, copy=False).reshape(-1)
+                wav_np = _generate_with_quality_guard(
+                    voxcpm_model,
+                    generate_kwargs,
+                    target_text=segment_text,
+                    sample_rate=sample_rate,
+                    retry_badcase=retry_badcase,
+                )
 
                 step_counter += int(inference_steps) + 1
                 pbar.update_absolute(step_counter, total_steps)
 
-                # Split the combined waveform by character proportion
-                char_lengths = [len(t) for t in texts]
-                total_chars = sum(char_lengths)
-                parts = []
-                offset = 0
-                for i, cl in enumerate(char_lengths):
-                    if i == len(char_lengths) - 1:
-                        parts.append(wav_np[offset:])
-                    else:
-                        length = int(len(wav_np) * cl / total_chars)
-                        parts.append(wav_np[offset:offset + length])
-                        offset += length
+                generated_segments.append(_normalize_rms(wav_np))
 
-                for (orig_idx, _), part in zip(group, parts):
-                    indexed_wavs[orig_idx] = _normalize_rms(part)
-
-            # Reassemble in original script order
-            final_parts = [w for w in indexed_wavs if w is not None]
-            combined = np.concatenate(final_parts, axis=-1)
+            combined = np.concatenate(generated_segments, axis=-1)
             peak = np.max(np.abs(combined))
             if peak > 0.99:
                 combined = combined * (0.99 / peak)
@@ -397,6 +359,11 @@ class RunningHubVoxCPMMultiSpeakerListReference:
                 "step": 64,
             }),
             "retry_badcase": ("BOOLEAN", {"default": True}),
+            # Keep this after legacy widgets for workflow compatibility.
+            "reference_texts": ("STRING", {
+                "default": "",
+                "multiline": True,
+            }),
         })
 
         stack = inspect.stack()
@@ -469,10 +436,14 @@ class RunningHubVoxCPMMultiSpeakerListReference:
 
         segments = _parse_script(script)
         control_map = _parse_speaker_controls(speaker_controls)
+        reference_text_map = _parse_reference_texts(
+            kwargs.get("reference_texts", "")
+        )
         logger.info(
-            "Parsed %d segments from script and %d speaker controls",
+            "Parsed %d segments, %d speaker controls, and %d reference transcripts",
             len(segments),
             len(control_map),
+            len(reference_text_map),
         )
 
         speaker_audios = {}
@@ -485,17 +456,12 @@ class RunningHubVoxCPMMultiSpeakerListReference:
             speaker_index = int(match.group(1))
             speaker_audios[speaker_index] = audio
 
-        spk_groups = {}
-        for orig_idx, (spk_idx, seg_text) in enumerate(segments):
-            spk_groups.setdefault(spk_idx, []).append((orig_idx, seg_text))
-
-        unique_speakers = sorted(spk_groups.keys())
-        total_steps = len(unique_speakers) * (inference_steps + 2) + 1
+        total_steps = len(segments) * (inference_steps + 2) + 1
         pbar = comfy.utils.ProgressBar(total_steps)
         step_counter = 0
 
         temp_files = []
-        indexed_wavs = [None] * len(segments)
+        generated_segments = []
 
         try:
             spk_wav_cache = {}
@@ -508,27 +474,25 @@ class RunningHubVoxCPMMultiSpeakerListReference:
                     wav_path = denoised
                 spk_wav_cache[spk_idx] = wav_path
 
-            spk_asr_cache = {}
-
-            for spk_idx in unique_speakers:
-                group = spk_groups[spk_idx]
-                texts = [segment_text for _, segment_text in group]
-                combined_text = "\n".join(texts)
-
+            for segment_index, (spk_idx, segment_text) in enumerate(segments, 1):
                 ref_wav_path = spk_wav_cache.get(spk_idx)
                 control = control_map.get(spk_idx, "")
+                reference_text = reference_text_map.get(spk_idx, "")
                 has_control = bool(control)
 
                 logger.info(
-                    "Generating spk%d: %d segments, combined %d chars, has_ref=%s, has_control=%s",
+                    "Generating segment %d/%d for spk%d: %d chars, "
+                    "has_ref=%s, has_control=%s, has_reference_text=%s",
+                    segment_index,
+                    len(segments),
                     spk_idx,
-                    len(group),
-                    len(combined_text),
+                    len(segment_text),
                     ref_wav_path is not None,
                     has_control,
+                    bool(reference_text),
                 )
 
-                final_text = f"({control}){combined_text}" if has_control else combined_text
+                final_text = f"({control}){segment_text}" if has_control else segment_text
                 generate_kwargs = {
                     "text": final_text,
                     "cfg_value": cfg_value,
@@ -542,52 +506,42 @@ class RunningHubVoxCPMMultiSpeakerListReference:
                 if has_control:
                     if ref_wav_path is not None and is_v2:
                         generate_kwargs["reference_wav_path"] = ref_wav_path
-                elif ref_wav_path is not None:
-                    if spk_idx not in spk_asr_cache:
-                        logger.info("Running ASR for spk%d...", spk_idx)
-                        spk_asr_cache[spk_idx] = _recognize_audio(ref_wav_path)
-                        logger.info(
-                            "ASR result for spk%d: %s...",
-                            spk_idx,
-                            spk_asr_cache[spk_idx][:60],
-                        )
-                    ref_text = spk_asr_cache[spk_idx]
+                elif ref_wav_path is not None and reference_text:
+                    generate_kwargs["prompt_wav_path"] = ref_wav_path
+                    generate_kwargs["prompt_text"] = reference_text
                     if is_v2:
-                        generate_kwargs["prompt_wav_path"] = ref_wav_path
-                        generate_kwargs["prompt_text"] = ref_text
                         generate_kwargs["reference_wav_path"] = ref_wav_path
-                    else:
-                        generate_kwargs["prompt_wav_path"] = ref_wav_path
-                        generate_kwargs["prompt_text"] = ref_text
+                elif ref_wav_path is not None and is_v2:
+                    generate_kwargs["reference_wav_path"] = ref_wav_path
+                elif ref_wav_path is not None:
+                    raise ValueError(
+                        f"spk{spk_idx} uses a VoxCPM v1 reference audio and "
+                        "requires a matching [spkN] transcript in reference_texts. "
+                        "Automatic ASR is intentionally disabled for generation."
+                    )
+                elif reference_text:
+                    raise ValueError(
+                        f"reference_texts contains [spk{spk_idx}] but audio_{spk_idx} "
+                        "is not connected."
+                    )
 
                 step_counter += 1
                 pbar.update_absolute(step_counter, total_steps)
 
-                wav_np = voxcpm_model.generate(**generate_kwargs)
-                if not isinstance(wav_np, np.ndarray):
-                    wav_np = np.asarray(wav_np, dtype=np.float32)
-                wav_np = wav_np.astype(np.float32, copy=False).reshape(-1)
+                wav_np = _generate_with_quality_guard(
+                    voxcpm_model,
+                    generate_kwargs,
+                    target_text=segment_text,
+                    sample_rate=sample_rate,
+                    retry_badcase=retry_badcase,
+                )
 
                 step_counter += inference_steps + 1
                 pbar.update_absolute(step_counter, total_steps)
 
-                char_lengths = [len(text_item) for text_item in texts]
-                total_chars = sum(char_lengths)
-                parts = []
-                offset = 0
-                for index, char_length in enumerate(char_lengths):
-                    if index == len(char_lengths) - 1:
-                        parts.append(wav_np[offset:])
-                    else:
-                        length = int(len(wav_np) * char_length / total_chars)
-                        parts.append(wav_np[offset:offset + length])
-                        offset += length
+                generated_segments.append(_normalize_rms(wav_np))
 
-                for (orig_idx, _), part in zip(group, parts):
-                    indexed_wavs[orig_idx] = _normalize_rms(part)
-
-            final_parts = [wav for wav in indexed_wavs if wav is not None]
-            combined = np.concatenate(final_parts, axis=-1)
+            combined = np.concatenate(generated_segments, axis=-1)
             peak = np.max(np.abs(combined))
             if peak > 0.99:
                 combined = combined * (0.99 / peak)

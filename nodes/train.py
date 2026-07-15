@@ -26,6 +26,12 @@ import folder_paths
 import comfy.utils
 
 from .generate import _denoise_audio, _recognize_audio, _safe_save_wav
+from .validation import (
+    resolve_allowed_file,
+    safe_child_directory,
+    safe_name_component,
+    validate_path_component,
+)
 
 logger = logging.getLogger("RunningHub.VoxCPM.Train")
 
@@ -33,7 +39,33 @@ VOXCPM_MODEL_TYPE = "voxcpm"
 LORA_MODEL_TYPE = "voxcpm_lora"
 
 
+def _allowed_data_roots() -> List[str]:
+    """Return platform-owned roots that workflow file inputs may reference."""
+
+    roots = [
+        folder_paths.get_input_directory(),
+        folder_paths.get_output_directory(),
+        folder_paths.get_temp_directory(),
+    ]
+    return [root for root in roots if root]
+
+
+def _resolve_manifest_path(value: object, *, label: str, required: bool) -> str:
+    raw = str(value or "").strip()
+    if not raw and not required:
+        return ""
+    return str(
+        resolve_allowed_file(
+            raw,
+            _allowed_data_roots(),
+            suffixes=(".jsonl",),
+            label=label,
+        )
+    )
+
+
 def _resolve_model_path(model_name: str) -> str:
+    model_name = validate_path_component(model_name, label="model_name")
     base_dirs = folder_paths.get_folder_paths(VOXCPM_MODEL_TYPE)
     for base in base_dirs:
         full = os.path.join(base, model_name)
@@ -112,7 +144,7 @@ def _zip_checkpoint_to_output(source_dir: Path, zip_name: str) -> Optional[dict]
     import shutil
 
     try:
-        safe_prefix = zip_name.strip().replace(" ", "_") or "voxcpm_lora"
+        safe_prefix = safe_name_component(zip_name, "voxcpm_lora")
         # RH convention: treat zip like an image output so RunningHub's
         # filename/subfolder rewriter can reach it. The subfolder is
         # deliberately scoped to the plugin so we never pollute the root
@@ -215,25 +247,40 @@ def _preflight_manifest(
     except ImportError:
         have_sf = False
 
-    valid = 0
-    short_clips = 0
-    rate_mismatches = 0
-    sample_count = min(len(lines), int(max_samples))
-    for raw in lines[:sample_count]:
+    records = []
+    for line_number, raw in enumerate(lines, 1):
         try:
             rec = json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.warning("manifest line is not valid JSON: %s", e)
-            continue
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"manifest line {line_number} is not valid JSON: {exc}"
+            ) from exc
         text = (rec.get("text") or "").strip()
         audio = rec.get("audio") or ""
         if not text:
-            logger.warning("manifest record missing 'text': %s", audio)
-            continue
-        if not audio or not os.path.isfile(audio):
-            logger.warning("manifest record audio not found: %s", audio)
-            continue
-        valid += 1
+            raise RuntimeError(f"manifest line {line_number} is missing 'text'")
+        try:
+            resolve_allowed_file(
+                audio,
+                _allowed_data_roots(),
+                label=f"manifest line {line_number} audio",
+            )
+            ref_audio = rec.get("ref_audio") or ""
+            if ref_audio:
+                resolve_allowed_file(
+                    ref_audio,
+                    _allowed_data_roots(),
+                    label=f"manifest line {line_number} ref_audio",
+                )
+        except (FileNotFoundError, ValueError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        records.append(rec)
+
+    short_clips = 0
+    rate_mismatches = 0
+    sample_count = min(len(records), int(max_samples))
+    for rec in records[:sample_count]:
+        audio = rec.get("audio") or ""
         if have_sf:
             try:
                 info = sf.info(audio)
@@ -244,11 +291,6 @@ def _preflight_manifest(
                     rate_mismatches += 1
             except Exception:
                 continue
-    if valid == 0:
-        raise RuntimeError(
-            f"manifest pre-flight failed: 0 valid records out of {sample_count} "
-            f"sampled in '{manifest_path}'. Check audio paths and 'text' fields."
-        )
     if short_clips:
         logger.warning(
             "manifest pre-flight: %d/%d sampled clips are < 0.3s; "
@@ -263,7 +305,7 @@ def _preflight_manifest(
         )
     logger.info(
         "manifest pre-flight OK: %d total records, %d/%d sampled valid.",
-        len(lines), valid, sample_count,
+        len(records), sample_count, sample_count,
     )
 
 
@@ -457,7 +499,9 @@ class RunningHubVoxCPMDatasetBuild:
 
     def build(self, entry_1, **kwargs):
         sample_rate = int(kwargs.get("sample_rate", 16000))
-        dataset_name = (kwargs.get("dataset_name") or "voxcpm_dataset").strip()
+        dataset_name = safe_name_component(
+            kwargs.get("dataset_name"), "voxcpm_dataset"
+        )
 
         entries: List[dict] = [entry_1]
         for i in range(2, 9):
@@ -466,7 +510,9 @@ class RunningHubVoxCPMDatasetBuild:
                 entries.append(e)
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        out_root = Path(_get_output_root()) / f"{dataset_name}_{ts}"
+        out_root = safe_child_directory(
+            _get_output_root(), f"{dataset_name}_{ts}", "voxcpm_dataset"
+        )
         wav_dir = out_root / "wavs"
         wav_dir.mkdir(parents=True, exist_ok=True)
 
@@ -499,8 +545,9 @@ class RunningHubVoxCPMDatasetBuild:
 
             extra = (kwargs.get("extra_manifest") or "").strip()
             if extra:
-                if not os.path.isfile(extra):
-                    raise FileNotFoundError(f"extra_manifest not found: {extra}")
+                extra = _resolve_manifest_path(
+                    extra, label="extra_manifest", required=True
+                )
                 with open(extra, "r", encoding="utf-8") as ef:
                     for line in ef:
                         line = line.strip()
@@ -611,7 +658,9 @@ class RunningHubVoxCPMDatasetBuildBatch:
         auto_asr = bool(self._scalar(auto_asr, True))
         sample_rate = int(self._scalar(sample_rate, 16000))
         dataset_id = int(self._scalar(dataset_id, 0))
-        dataset_name = (self._scalar(dataset_name, "voxcpm_dataset") or "voxcpm_dataset").strip()
+        dataset_name = safe_name_component(
+            self._scalar(dataset_name, "voxcpm_dataset"), "voxcpm_dataset"
+        )
         min_duration = float(self._scalar(min_duration, 0.5))
         max_duration = float(self._scalar(max_duration, 30.0))
         extra_manifest_path = (self._scalar(extra_manifest, "") or "").strip()
@@ -626,7 +675,9 @@ class RunningHubVoxCPMDatasetBuildBatch:
             text_list = [str(texts)]
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        out_root = Path(_get_output_root()) / f"{dataset_name}_{ts}"
+        out_root = safe_child_directory(
+            _get_output_root(), f"{dataset_name}_{ts}", "voxcpm_dataset"
+        )
         wav_dir = out_root / "wavs"
         wav_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = out_root / "train.jsonl"
@@ -747,10 +798,11 @@ class RunningHubVoxCPMDatasetBuildBatch:
                     pbar.update_absolute(idx + 1, total)
 
             if extra_manifest_path:
-                if not os.path.isfile(extra_manifest_path):
-                    raise FileNotFoundError(
-                        f"extra_manifest not found: {extra_manifest_path}"
-                    )
+                extra_manifest_path = _resolve_manifest_path(
+                    extra_manifest_path,
+                    label="extra_manifest",
+                    required=True,
+                )
                 with open(extra_manifest_path, "r", encoding="utf-8") as ef:
                     for line in ef:
                         line = line.strip()
@@ -1270,7 +1322,12 @@ class RunningHubVoxCPMTrainLoRA:
         zip_to_output=True,
     ):
         _ensure_voxcpm_src_importable()
-        train_manifest = (train_manifest or "").strip()
+        train_manifest = _resolve_manifest_path(
+            train_manifest, label="train_manifest", required=True
+        )
+        val_manifest = _resolve_manifest_path(
+            val_manifest, label="val_manifest", required=False
+        )
 
         pretrained_path = _resolve_model_path(model_name)
         arch = _detect_architecture(pretrained_path)
@@ -1281,6 +1338,8 @@ class RunningHubVoxCPMTrainLoRA:
         # loading via on-the-fly resampling.
         expected_sr = _detect_sample_rate(pretrained_path)
         _preflight_manifest(train_manifest, expected_sample_rate=expected_sr)
+        if val_manifest:
+            _preflight_manifest(val_manifest, expected_sample_rate=expected_sr)
         lora_cfg = _build_lora_config(
             arch,
             enable_lm=enable_lm,
@@ -1292,8 +1351,10 @@ class RunningHubVoxCPMTrainLoRA:
         )
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        safe_name = (output_name or "voxcpm_lora").strip().replace(" ", "_")
-        run_dir = Path(_get_output_root()) / f"{safe_name}_{ts}"
+        safe_name = safe_name_component(output_name, "voxcpm_lora")
+        run_dir = safe_child_directory(
+            _get_output_root(), f"{safe_name}_{ts}", "voxcpm_lora"
+        )
         ckpt_dir = run_dir / "checkpoints"
 
         total_pbar_steps = int(num_iters)
@@ -1456,16 +1517,25 @@ class RunningHubVoxCPMTrainFull:
         zip_to_output=True,
     ):
         _ensure_voxcpm_src_importable()
-        train_manifest = (train_manifest or "").strip()
+        train_manifest = _resolve_manifest_path(
+            train_manifest, label="train_manifest", required=True
+        )
+        val_manifest = _resolve_manifest_path(
+            val_manifest, label="val_manifest", required=False
+        )
 
         pretrained_path = _resolve_model_path(model_name)
         arch = _detect_architecture(pretrained_path)
         expected_sr = _detect_sample_rate(pretrained_path)
         _preflight_manifest(train_manifest, expected_sample_rate=expected_sr)
+        if val_manifest:
+            _preflight_manifest(val_manifest, expected_sample_rate=expected_sr)
 
         ts = time.strftime("%Y%m%d_%H%M%S")
-        safe_name = (output_name or "voxcpm_full").strip().replace(" ", "_")
-        run_dir = Path(_get_output_root()) / f"{safe_name}_{ts}"
+        safe_name = safe_name_component(output_name, "voxcpm_full")
+        run_dir = safe_child_directory(
+            _get_output_root(), f"{safe_name}_{ts}", "voxcpm_full"
+        )
         ckpt_dir = run_dir / "checkpoints"
 
         total_pbar_steps = int(num_iters)

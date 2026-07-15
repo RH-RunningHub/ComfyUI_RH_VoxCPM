@@ -20,7 +20,7 @@ GitHub Repository: [RH-RunningHub/ComfyUI_RH_VoxCPM](https://github.com/RH-Runni
 - **Ultimate Cloning**: Reproduce every vocal nuance through audio continuation (VoxCPM2 only)
 - **LoRA Fine-tuning**: Load custom LoRA weights for personalized voice generation
 - **LoRA / Full Training**: Train VoxCPM LoRA (or full fine-tune) directly from a ComfyUI workflow, reusing the upstream training loop
-- **Auto ASR**: Automatically recognize reference audio text via FunASR SenseVoiceSmall when `reference_audio_text` is empty
+- **Dataset Auto ASR**: Optionally transcribe training clips with FunASR SenseVoiceSmall; generation never silently trusts ASR text
 - **Reference Denoising**: Optional ZipEnhancer denoising for reference audio before cloning
 
 ## 🛠️ Installation
@@ -114,7 +114,7 @@ Notes:
 
 - **Voice Design**: Fill `control_instruction` (e.g. "A warm young woman"), leave `reference_audio` empty. The model creates a brand-new voice from your description alone.
 - **Controllable Cloning**: Upload `reference_audio`, keep `ultimate_clone` OFF. Use `control_instruction` to steer emotion, pace, and style while preserving the reference timbre.
-- **Ultimate Cloning**: Upload `reference_audio`, turn `ultimate_clone` ON. The model treats the reference as a spoken prefix and continues from it, faithfully reproducing every vocal detail. `control_instruction` is ignored in this mode. If `reference_audio_text` is empty, ASR will auto-recognize it.
+- **Ultimate Cloning**: Upload `reference_audio`, turn `ultimate_clone` ON, and provide its exact `reference_audio_text`. The model treats the reference as a spoken prefix and continues from it. `control_instruction` is ignored in this mode. Generation intentionally does not auto-transcribe the reference because an incorrect transcript can change the spoken content.
 
 ## 📝 Node Reference
 
@@ -142,7 +142,7 @@ Generate speech with voice design, controllable cloning, or ultimate cloning.
 | control_instruction | STRING | Voice description for voice design mode (optional) |
 | reference_audio | AUDIO | Reference audio for cloning (optional) |
 | ultimate_clone | BOOLEAN | Enable ultimate cloning mode (default: off) |
-| reference_audio_text | STRING | Transcript of reference audio; auto ASR if empty (optional) |
+| reference_audio_text | STRING | Exact reference transcript; required when `ultimate_clone` is on |
 | normalize_text | BOOLEAN | Text normalization (default: off) |
 | denoise_reference | BOOLEAN | Denoise reference audio via ZipEnhancer (default: off) |
 | max_len | INT | Maximum token length during generation (default: 4096) |
@@ -161,6 +161,7 @@ Generate multi-speaker dialogue from a tagged script. Supports up to 5 speakers 
 | seed | INT | Random seed for reproducibility |
 | audio_1 ~ audio_5 | AUDIO | Reference audio for each speaker (optional) |
 | control_1 ~ control_5 | STRING | Voice description for each speaker (optional) |
+| reference_text_1 ~ reference_text_5 | STRING | Exact transcript for each reference audio (optional). If omitted on VoxCPM2, safe reference-only conditioning is used instead of auto ASR |
 | normalize_text | BOOLEAN | Text normalization (default: off) |
 | denoise_reference | BOOLEAN | Denoise reference audio via ZipEnhancer (default: off) |
 | max_len | INT | Maximum token length during generation (default: 4096) |
@@ -184,6 +185,7 @@ Usage tips:
 | inference_steps | INT | LocDiT flow-matching steps (default: 10) |
 | seed | INT | Random seed for reproducibility |
 | audio_1 ~ audio_N | AUDIO | Dynamic reference-audio inputs mapped to `spk1 ~ spkN` by slot order; starts with 2, auto-grows when filled, and has no fixed upper limit |
+| reference_texts | STRING | Optional tagged exact transcripts, e.g. `[spk1]Reference words\n[spk2]Second reference`; blank uses VoxCPM2 reference-only conditioning |
 | normalize_text | BOOLEAN | Text normalization (default: off) |
 | denoise_reference | BOOLEAN | Denoise reference audio via ZipEnhancer (default: off) |
 | max_len | INT | Maximum token length during generation (default: 4096) |

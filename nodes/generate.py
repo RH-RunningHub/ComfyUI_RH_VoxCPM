@@ -2,12 +2,13 @@ import logging
 import os
 import tempfile
 
-import numpy as np
 import torch
 import torchaudio
 import soundfile as sf
 import folder_paths
 import comfy.utils
+
+from .validation import GeneratedAudioQualityError, validate_generated_audio
 
 logger = logging.getLogger("RunningHub.VoxCPM")
 
@@ -108,6 +109,36 @@ def _recognize_audio(wav_path):
                 torch.cuda.ipc_collect()
             except Exception:
                 pass
+
+
+def _generate_with_quality_guard(
+    voxcpm_model,
+    generate_kwargs,
+    *,
+    target_text,
+    sample_rate,
+    retry_badcase,
+):
+    """Generate speech and reject empty, silent, or prematurely-ended audio."""
+
+    attempts = 2 if retry_badcase else 1
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        wav_np = voxcpm_model.generate(**generate_kwargs)
+        try:
+            return validate_generated_audio(wav_np, sample_rate, target_text)
+        except GeneratedAudioQualityError as exc:
+            last_error = exc
+            logger.warning(
+                "Generated audio failed quality validation (attempt %d/%d): %s",
+                attempt,
+                attempts,
+                exc,
+            )
+    raise RuntimeError(
+        f"VoxCPM failed output quality validation after {attempts} attempt(s): "
+        f"{last_error}"
+    ) from last_error
 
 
 def _get_denoiser():
@@ -244,6 +275,18 @@ class RunningHubVoxCPMGenerate:
         ref_wav_path = None
         temp_files = []
 
+        if ultimate_clone and reference_audio is None:
+            raise ValueError(
+                "Ultimate clone requires reference_audio. Disable ultimate_clone "
+                "for reference-only voice conditioning."
+            )
+        if ultimate_clone and not ref_text:
+            raise ValueError(
+                "Ultimate clone requires an exact reference_audio_text transcript. "
+                "Automatic ASR is intentionally not used because an incorrect "
+                "transcript can change the generated speech content."
+            )
+
         try:
             if reference_audio is not None:
                 waveform = reference_audio["waveform"]
@@ -265,11 +308,6 @@ class RunningHubVoxCPMGenerate:
                     denoised_path = _denoise_audio(ref_wav_path)
                     temp_files.append(denoised_path)
                     ref_wav_path = denoised_path
-
-                if ultimate_clone and ref_text is None:
-                    logger.info("Ultimate clone: reference_audio_text is empty, running ASR...")
-                    ref_text = _recognize_audio(ref_wav_path)
-                    logger.info("ASR result: %s...", ref_text[:80])
 
             total_steps = int(inference_steps) + 2
             pbar = comfy.utils.ProgressBar(total_steps)
@@ -298,10 +336,13 @@ class RunningHubVoxCPMGenerate:
 
             pbar.update(1)
 
-            wav_np = voxcpm_model.generate(**generate_kwargs)
-            if not isinstance(wav_np, np.ndarray):
-                wav_np = np.asarray(wav_np, dtype=np.float32)
-            wav_np = wav_np.astype(np.float32, copy=False).reshape(-1)
+            wav_np = _generate_with_quality_guard(
+                voxcpm_model,
+                generate_kwargs,
+                target_text=text,
+                sample_rate=sample_rate,
+                retry_badcase=retry_badcase,
+            )
             pbar.update_absolute(total_steps - 1, total_steps)
 
             wav_tensor = torch.from_numpy(wav_np).float().unsqueeze(0).unsqueeze(0)

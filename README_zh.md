@@ -20,7 +20,7 @@ GitHub 仓库地址：[RH-RunningHub/ComfyUI_RH_VoxCPM](https://github.com/RH-Ru
 - **极致克隆**：以音频续写方式复刻每一个声音细节（仅 VoxCPM2 支持）
 - **LoRA 微调**：加载自定义 LoRA 权重，实现个性化语音生成
 - **LoRA/全量训练**：直接在 ComfyUI 工作流中训练 VoxCPM LoRA 或全量微调（复用原项目的训练循环）
-- **自动 ASR**：参考音频文本为空时，自动通过 FunASR SenseVoiceSmall 识别
+- **训练集自动 ASR**：可选用 FunASR SenseVoiceSmall 转写训练音频；生成节点不会再静默信任自动识别文本
 - **参考音频降噪**：可选 ZipEnhancer 对参考音频进行降噪处理
 
 ## 🛠️ 安装
@@ -115,7 +115,7 @@ modelscope download --model iic/speech_zipenhancer_ans_multiloss_16k_base --loca
 
 - **声音设计**：填写 `control_instruction`（如"一个温柔的年轻女性"），不上传 `reference_audio`。模型仅根据文字描述从零创造一个全新的声音。
 - **可控克隆**：上传 `reference_audio`，保持 `ultimate_clone` 关闭。通过 `control_instruction` 控制情感、语速和风格，同时保留参考音频的音色。
-- **极致克隆**：上传 `reference_audio`，开启 `ultimate_clone`。模型将参考音频视为已说出的前缀并从中续写，忠实复刻每一个声音细节。此模式下 `control_instruction` 会被忽略。若 `reference_audio_text` 为空，将自动进行 ASR 识别。
+- **极致克隆**：上传 `reference_audio`，开启 `ultimate_clone`，并填写准确的 `reference_audio_text`。模型将参考音频视为已说出的前缀并从中续写；此模式下 `control_instruction` 会被忽略。生成节点不再自动识别参考文本，避免错误转写改变实际朗读内容。
 
 ## 📝 节点参考
 
@@ -145,7 +145,7 @@ modelscope download --model iic/speech_zipenhancer_ans_multiloss_16k_base --loca
 | control_instruction | STRING | 声音描述，用于声音设计模式（可选） |
 | reference_audio | AUDIO | 参考音频，用于克隆模式（可选） |
 | ultimate_clone | BOOLEAN | 启用极致克隆模式（默认：关） |
-| reference_audio_text | STRING | 参考音频的文字内容；为空时自动 ASR 识别（可选） |
+| reference_audio_text | STRING | 参考音频的准确文字内容；开启 `ultimate_clone` 时必填 |
 | normalize_text | BOOLEAN | 文本规范化（默认：关） |
 | denoise_reference | BOOLEAN | 通过 ZipEnhancer 对参考音频降噪（默认：关） |
 | max_len | INT | 生成时最大 token 长度（默认：4096） |
@@ -164,6 +164,7 @@ modelscope download --model iic/speech_zipenhancer_ans_multiloss_16k_base --loca
 | seed | INT | 随机种子 |
 | audio_1 ~ audio_5 | AUDIO | 各说话人的参考音频（可选） |
 | control_1 ~ control_5 | STRING | 各说话人的声音描述（可选） |
+| reference_text_1 ~ reference_text_5 | STRING | 各参考音频的准确文本（可选）；VoxCPM2 留空时使用安全的纯参考音色模式，不再自动 ASR |
 | normalize_text | BOOLEAN | 文本规范化（默认：关） |
 | denoise_reference | BOOLEAN | 通过 ZipEnhancer 对参考音频降噪（默认：关） |
 | max_len | INT | 生成时最大 token 长度（默认：4096） |
@@ -187,6 +188,7 @@ modelscope download --model iic/speech_zipenhancer_ans_multiloss_16k_base --loca
 | inference_steps | INT | LocDiT 流匹配步数（默认：10） |
 | seed | INT | 随机种子 |
 | audio_1 ~ audio_N | AUDIO | 动态参考音频输入，按槽位顺序映射到 `spk1 ~ spkN`；默认显示 2 个，接满后自动增加，无上限 |
+| reference_texts | STRING | 可选的带标签准确转写，如 `[spk1]参考音频原文\n[spk2]第二段原文`；留空时使用 VoxCPM2 纯参考音色模式 |
 | normalize_text | BOOLEAN | 文本规范化（默认：关） |
 | denoise_reference | BOOLEAN | 通过 ZipEnhancer 对参考音频降噪（默认：关） |
 | max_len | INT | 生成时最大 token 长度（默认：4096） |

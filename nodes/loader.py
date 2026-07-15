@@ -4,6 +4,8 @@ import os
 
 import folder_paths
 
+from .validation import validate_path_component
+
 logger = logging.getLogger("RunningHub.VoxCPM")
 
 VOXCPM_MODEL_TYPE = "voxcpm"
@@ -68,6 +70,7 @@ def _list_lora_files():
 
 def _resolve_model_path(model_name):
     """Resolve model name to full path."""
+    model_name = validate_path_component(model_name, label="model_name")
     base_dirs = folder_paths.get_folder_paths(VOXCPM_MODEL_TYPE)
     for base in base_dirs:
         full = os.path.join(base, model_name)
@@ -88,6 +91,7 @@ def _resolve_lora_path(lora_name):
     """
     if not lora_name or lora_name == "None":
         return None
+    lora_name = validate_path_component(lora_name, label="lora_name")
     base_dirs = folder_paths.get_folder_paths(LORA_MODEL_TYPE)
     for base in base_dirs:
         full = os.path.join(base, lora_name)
@@ -445,6 +449,12 @@ class RunningHubVoxCPMLoadModel:
         # (model_name keeps the default validation). Workflows may reference a
         # LoRA file that is missing on this machine; we warn at load time and
         # fall back to no-LoRA instead of blocking submission.
+        if not lora_name or lora_name == "None":
+            return True
+        try:
+            validate_path_component(lora_name, label="lora_name")
+        except ValueError as exc:
+            return str(exc)
         return True
 
     def load_model(self, model_name, optimize, lora_name="None"):
