@@ -261,7 +261,8 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## 🔗 Links
 
-- [RunningHub](https://www.runninghub.cn)
+- [RunningHub China](https://www.runninghub.cn/?inviteCode=rh-v1367)
+- [RunningHub International](https://www.runninghub.ai/?inviteCode=rh-v1367)
 - [VoxCPM (Original Project)](https://github.com/OpenBMB/VoxCPM)
 - [VoxCPM2 on HuggingFace](https://huggingface.co/openbmb/VoxCPM2)
 

@@ -287,7 +287,8 @@ modelscope download --model iic/speech_zipenhancer_ans_multiloss_16k_base --loca
 
 ## 🔗 相关链接
 
-- [RunningHub](https://www.runninghub.cn)
+- [RunningHub 国内站](https://www.runninghub.cn/?inviteCode=rh-v1367)
+- [RunningHub 国际站](https://www.runninghub.ai/?inviteCode=rh-v1367)
 - [VoxCPM（原始项目）](https://github.com/OpenBMB/VoxCPM)
 - [VoxCPM2 on HuggingFace](https://huggingface.co/openbmb/VoxCPM2)
 
