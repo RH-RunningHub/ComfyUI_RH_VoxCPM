@@ -20,7 +20,18 @@ _CJK_CHAR = re.compile(
     r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
     r"\u3040-\u30ff\u31f0-\u31ff\uac00-\ud7af]"
 )
-_LATIN_WORD = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
+# Unicode-aware word match: diacritic languages write accented letters outside
+# ASCII (Vietnamese à ế ộ ơ ư đ, ...), so an ASCII-only pattern split every
+# such word into several tokens and inflated the word count ~1.5-2.5x.
+_LATIN_WORD = re.compile(r"[^\W_]+(?:['’\-][^\W_]+)*", re.UNICODE)
+# Vietnamese-specific letters (ă đ ê ô ơ ư plus tone-marked vowels from Latin
+# Extended Additional). Vietnamese orthographic words are single syllables
+# spoken at up to ~7 syllables/s, faster than the English-calibrated 5 words/s
+# floor, so clearly-Vietnamese texts get that relaxed rate.
+_VIETNAMESE_CHAR = re.compile(
+    r"[\u0102\u0103\u0110\u0111\u01a0\u01a1\u01af\u01b0\u1e00-\u1eff]",
+    re.IGNORECASE,
+)
 
 
 class GeneratedAudioQualityError(ValueError):
@@ -116,7 +127,8 @@ def validate_generated_audio(wav: object, sample_rate: int, target_text: str) ->
     VoxCPM's built-in bad-case retry currently catches only overlong feature
     sequences. A premature EOS can therefore return a short but otherwise valid
     ndarray. The language-aware lower bound below is intentionally permissive:
-    up to 10 CJK characters/s or 5 Latin words/s is accepted.
+    up to 10 CJK characters/s or 5 Latin words/s is accepted (7 words/s for
+    Vietnamese-diacritic text, whose orthographic words are single syllables).
     """
 
     array = np.asarray(wav, dtype=np.float32).reshape(-1)
@@ -136,13 +148,16 @@ def validate_generated_audio(wav: object, sample_rate: int, target_text: str) ->
 
     text = str(target_text or "").strip()
     cjk_count = len(_CJK_CHAR.findall(text))
-    latin_words = len(_LATIN_WORD.findall(_CJK_CHAR.sub(" ", text)))
-    minimum_duration = max(0.25, cjk_count / 10.0 + latin_words / 5.0)
+    stripped = _CJK_CHAR.sub(" ", text)
+    latin_words = len(_LATIN_WORD.findall(stripped))
+    latin_rate = 7.0 if len(_VIETNAMESE_CHAR.findall(stripped)) >= 3 else 5.0
+    minimum_duration = max(0.25, cjk_count / 10.0 + latin_words / latin_rate)
     duration = array.size / float(sample_rate)
     if duration + 0.05 < minimum_duration:
         raise GeneratedAudioQualityError(
             "VoxCPM returned implausibly short audio: "
             f"duration={duration:.2f}s, required>={minimum_duration:.2f}s, "
-            f"cjk_chars={cjk_count}, latin_words={latin_words}"
+            f"cjk_chars={cjk_count}, latin_words={latin_words}, "
+            f"latin_rate={latin_rate:g}"
         )
     return array

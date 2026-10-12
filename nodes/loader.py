@@ -46,14 +46,26 @@ def _list_model_dirs():
 
 def _list_lora_files():
     """List LoRA weight files (.pth, .ckpt) and directories."""
-    base_dirs = folder_paths.get_folder_paths(LORA_MODEL_TYPE)
+    dedicated_dirs = folder_paths.get_folder_paths(LORA_MODEL_TYPE)
+    # VoxCPM LoRAs also commonly land in the shared "loras" folder type (the
+    # model hub syncs uploads there); surface those too, filtered to
+    # voxcpm-named entries so unrelated model-family LoRAs stay out of the
+    # dropdown.
+    generic_dirs = [
+        base
+        for base in folder_paths.get_folder_paths("loras")
+        if base not in dedicated_dirs
+    ]
     seen = set()
     results = ["None"]
-    for base in base_dirs:
+
+    def collect(base, voxcpm_only):
         if not os.path.isdir(base):
-            continue
+            return
         for name in sorted(os.listdir(base)):
             if name in seen:
+                continue
+            if voxcpm_only and "voxcpm" not in name.lower():
                 continue
             full = os.path.join(base, name)
             is_weight_file = os.path.isfile(full) and name.endswith((".pth", ".ckpt", ".safetensors"))
@@ -65,6 +77,11 @@ def _list_lora_files():
             if is_weight_file or is_weight_dir:
                 seen.add(name)
                 results.append(name)
+
+    for base in dedicated_dirs:
+        collect(base, voxcpm_only=False)
+    for base in generic_dirs:
+        collect(base, voxcpm_only=True)
     return results
 
 
@@ -92,7 +109,14 @@ def _resolve_lora_path(lora_name):
     if not lora_name or lora_name == "None":
         return None
     lora_name = validate_path_component(lora_name, label="lora_name")
-    base_dirs = folder_paths.get_folder_paths(LORA_MODEL_TYPE)
+    base_dirs = list(folder_paths.get_folder_paths(LORA_MODEL_TYPE))
+    # Fall back to the shared "loras" model folder: a filename-only exact
+    # lookup there cannot pull in unrelated model-family LoRAs, while it does
+    # rescue workflows whose LoRA was synced into loras/ instead of the
+    # voxcpm-specific folder.
+    for base in folder_paths.get_folder_paths("loras"):
+        if base not in base_dirs:
+            base_dirs.append(base)
     for base in base_dirs:
         full = os.path.join(base, lora_name)
         if os.path.isfile(full) or os.path.isdir(full):

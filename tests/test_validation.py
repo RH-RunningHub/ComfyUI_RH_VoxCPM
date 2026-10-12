@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 
 from nodes.validation import (
+    _CJK_CHAR,
+    _LATIN_WORD,
+    _VIETNAMESE_CHAR,
     GeneratedAudioQualityError,
     resolve_allowed_file,
     safe_child_directory,
@@ -78,6 +81,42 @@ class GeneratedAudioValidationTests(unittest.TestCase):
                 self.SAMPLE_RATE,
                 "test",
             )
+
+    def test_vietnamese_diacritic_words_counted_singly(self):
+        # Regression for task 2109550952129454082: the ASCII-only word pattern
+        # split every diacritic letter ("chào" -> 2, "người" -> 3) and
+        # inflated the word count ~1.5-2.5x, failing otherwise-valid audio.
+        text = "Xin chào mọi người, hôm nay trời rất đẹp."
+        stripped = _CJK_CHAR.sub(" ", text)
+        self.assertEqual(len(_LATIN_WORD.findall(stripped)), 9)
+        self.assertGreaterEqual(len(_VIETNAMESE_CHAR.findall(stripped)), 3)
+
+    def test_vietnamese_text_passes_at_normal_pace(self):
+        # 9 diacritic words at the Vietnamese rate (7 words/s) need >=1.29s;
+        # the old English-calibrated floor (15 split tokens / 5) demanded 3.0s.
+        text = "Xin chào mọi người, hôm nay trời rất đẹp."
+        validate_generated_audio(self._tone(2.0), self.SAMPLE_RATE, text)
+
+    def test_vietnamese_text_still_rejects_premature_eos(self):
+        text = "Xin chào mọi người, hôm nay trời rất đẹp."
+        with self.assertRaises(GeneratedAudioQualityError):
+            validate_generated_audio(self._tone(0.5), self.SAMPLE_RATE, text)
+
+    def test_english_lower_bound_unchanged(self):
+        text = "This is a normal English sentence for testing."
+        self.assertEqual(len(_LATIN_WORD.findall(text)), 8)
+        validate_generated_audio(self._tone(1.70), self.SAMPLE_RATE, text)
+        with self.assertRaises(GeneratedAudioQualityError):
+            validate_generated_audio(self._tone(1.50), self.SAMPLE_RATE, text)
+
+    def test_ascii_only_latin_keeps_strict_floor(self):
+        # Vietnamese typed without diacritics (or any plain-ASCII Latin text)
+        # keeps the English-calibrated 5 words/s floor.
+        text = "xin chao, hom nay troi rat dep"
+        self.assertEqual(len(_LATIN_WORD.findall(text)), 7)
+        validate_generated_audio(self._tone(1.50), self.SAMPLE_RATE, text)
+        with self.assertRaises(GeneratedAudioQualityError):
+            validate_generated_audio(self._tone(1.30), self.SAMPLE_RATE, text)
 
 
 if __name__ == "__main__":
