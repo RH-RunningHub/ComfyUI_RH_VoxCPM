@@ -1,7 +1,7 @@
 [project]
 name = "rh_voxcpm"
 description = "ComfyUI custom nodes for VoxCPM text-to-speech, voice cloning, multi-speaker generation, and LoRA training."
-version = "261012.17.20"
+version = "261012.17.24"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 # classifiers = [
